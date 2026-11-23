@@ -35,9 +35,9 @@ dt_weather = scarica('weather', {'session_key' : 9094}, 'weather.csv')
 
 PILOTA = 1
 
-giri_pilota = dt_laps[(dt_laps['driver_number'] == PILOTA) & (dt_laps['lap_number'].between(2,51)) ]   # pilota 1, giri tra 2 e 51
-giri_pilota = giri_pilota[giri_pilota['is_pit_out_lap'] == False]                  # togli i giri di uscita dai box
-giri_pilota = giri_pilota.dropna(subset=['lap_duration'])    # togli i tempi mancanti
+giri_pilota = dt_laps[(dt_laps['driver_number'] == PILOTA) & (dt_laps['lap_number'].between(2,51)) ]
+giri_pilota = giri_pilota[giri_pilota['is_pit_out_lap'] == False]
+giri_pilota = giri_pilota.dropna(subset=['lap_duration'])
 
 print(giri_pilota.shape)
 
