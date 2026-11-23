@@ -1,38 +1,37 @@
+import os
+import time
 import requests
 import pandas as pd
 
-def da_url_a_dataframe(url, params):
-    risposta = requests.get(url, params=params)
+BASE_URL = 'https://api.openf1.org/v1'
+DATA_DIR = 'data'
+SESSION_KEY = 9094
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def scarica(endpoint, params, nome_file):
+    """Scarica una tabella da OpenF1, o la legge da file se l'ho già scaricata."""
+    percorso = os.path.join(DATA_DIR, nome_file)
+    if os.path.exists(percorso):
+        return pd.read_csv(percorso)
+    risposta = requests.get(BASE_URL + '/' + endpoint, params=params)
+    risposta.raise_for_status()
     dati = risposta.json()
     dt = pd.DataFrame(dati)
+    column_list = [c for c in dt.columns if dt[c].apply(lambda x: isinstance(x, list)).any()]
+    dt = dt.drop(columns=column_list, errors='ignore')
+    dt.to_csv(percorso, index=False)
+    time.sleep(1)
     return dt
 
-url_sessions = 'https://api.openf1.org/v1/sessions'
-params_sessions = {'year': 2023, 'session_name': 'Race'}
-
-url_laps = 'https://api.openf1.org/v1/laps'
-params_laps = {'session_key' : 9094}
-
-url_stints = 'https://api.openf1.org/v1/stints'
-params_stints = {'session_key' : 9094}
-
-url_race_control = 'https://api.openf1.org/v1/race_control'
-params_race_control = {'session_key' : 9094}
-
-url_weather = 'https://api.openf1.org/v1/weather'
-params_weather = {'session_key' : 9094}
 
 
-dt_sessions = da_url_a_dataframe(url_sessions, params_sessions)
-dt_laps = da_url_a_dataframe(url_laps, params_laps)
-dt_stints = da_url_a_dataframe(url_stints, params_stints)
-dt_race_control = da_url_a_dataframe(url_race_control, params_race_control)
-dt_weather = da_url_a_dataframe(url_weather, params_weather)
+dt_sessions = scarica('sessions', {'year': 2023, 'session_name': 'Race'}, 'sessions.csv')
+dt_laps = scarica('laps', {'session_key' : 9094}, 'laps.csv')
+dt_stints = scarica('stints', {'session_key' : 9094}, 'stints.csv')
+dt_race_control = scarica('race_control', {'session_key' : 9094}, 'race_control.csv')
+dt_weather = scarica('weather', {'session_key' : 9094}, 'weather.csv')
 
-
-#print(dt_laps[dt_laps['driver_number'] == 1][['lap_number', 'lap_duration', 'is_pit_out_lap']].head(60))
-#print(dt_race_control.columns)
-print(dt_race_control[(dt_race_control['lap_number'] == 54)][['flag', 'message']])
 
 
 
