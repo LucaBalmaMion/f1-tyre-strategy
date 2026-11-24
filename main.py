@@ -11,31 +11,29 @@ SESSION_KEY = 9094
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def scarica(endpoint, params, nome_file):
-    """Scarica una tabella da OpenF1, o la legge da file se l'ho già scaricata."""
     percorso = os.path.join(DATA_DIR, nome_file)
     if os.path.exists(percorso):
         return pd.read_csv(percorso)
     risposta = requests.get(BASE_URL + '/' + endpoint, params=params)
     risposta.raise_for_status()
     dati = risposta.json()
-    dt = pd.DataFrame(dati)
-    column_list = [c for c in dt.columns if dt[c].apply(lambda x: isinstance(x, list)).any()]
-    dt = dt.drop(columns=column_list, errors='ignore')
-    dt.to_csv(percorso, index=False)
+    df = pd.DataFrame(dati)
+    column_list = [c for c in df.columns if df[c].apply(lambda x: isinstance(x, list)).any()]
+    df = df.drop(columns=column_list, errors='ignore')
+    df.to_csv(percorso, index=False)
     time.sleep(1)
-    return dt
+    return df
 
 
-
-dt_sessions = scarica('sessions', {'year': 2023, 'session_name': 'Race'}, 'sessions.csv')
-dt_laps = scarica('laps', {'session_key' : 9094}, 'laps.csv')
-dt_stints = scarica('stints', {'session_key' : 9094}, 'stints.csv')
-dt_race_control = scarica('race_control', {'session_key' : 9094}, 'race_control.csv')
-dt_weather = scarica('weather', {'session_key' : 9094}, 'weather.csv')
+df_sessions = scarica('sessions', {'year': 2023, 'session_name': 'Race'}, 'sessions.csv')
+df_laps = scarica('laps', {'session_key' : 9094}, 'laps.csv')
+df_stints = scarica('stints', {'session_key' : 9094}, 'stints.csv')
+df_race_control = scarica('race_control', {'session_key' : 9094}, 'race_control.csv')
+df_weather = scarica('weather', {'session_key' : 9094}, 'weather.csv')
 
 PILOTA = 1
 
-giri_pilota = dt_laps[(dt_laps['driver_number'] == PILOTA) & (dt_laps['lap_number'].between(2,51)) ]
+giri_pilota = df_laps[(df_laps['driver_number'] == PILOTA) & (df_laps['lap_number'].between(2,51)) ]
 giri_pilota = giri_pilota[giri_pilota['is_pit_out_lap'] == False]
 giri_pilota = giri_pilota.dropna(subset=['lap_duration'])
 
@@ -50,31 +48,70 @@ ax.grid(True)
 fig.savefig('figures/01_tempo_giro_pilota1.png', dpi=150)
 plt.show()
 
-print(dt_laps.columns)
-print(dt_laps['lap_duration'].describe().round(3))
-dt_laps['lap_duration'] = dt_laps['lap_duration'] < 90
-print(dt_laps['lap_duration'].head(15))
+print(df_laps.columns)
+print(df_laps['lap_duration'].describe().round(3))
+df_laps['lap_duration'] = df_laps['lap_duration'] < 90
+print(df_laps['lap_duration'].head(15))
 
-print(dt_laps.loc[dt_laps['driver_number'] == PILOTA, ['lap_number', 'lap_duration']])
-dt_laps.groupby('driver_number')['lap_duration'].mean()
-dt_laps.groupby('driver_number')['lap_duration'].agg(['count', 'mean', 'min', 'max'])
+print(df_laps.loc[df_laps['driver_number'] == PILOTA, ['lap_number', 'lap_duration']])
+df_laps.groupby('driver_number')['lap_duration'].mean()
+df_laps.groupby('driver_number')['lap_duration'].agg(['count', 'mean', 'min', 'max'])
 '''
 
-print(dt_laps.columns)
+#print(df_laps.columns)
+df_laps = df_laps.sort_values(['driver_number', 'lap_number'])
 
-#print(dt_laps['driver_number'].value_counts())
-#print(dt_laps.sort_values(by='lap_duration', ascending=True)[['driver_number', 'lap_duration']].head(5))
-#print(dt_laps[(dt_laps['lap_number'] != 1) & (dt_laps['is_pit_out_lap'] == False)].groupby('driver_number')['lap_duration'].median())
-#print(dt_laps['lap_duration'].isna().sum())
-#print(dt_laps[dt_laps['lap_duration'].isna()]['lap_number'])
-dt_laps['is_pit_in_lap'] = dt_laps.groupby('driver_number')['is_pit_out_lap'].shift(-1)
-print(dt_laps[dt_laps['lap_number'].between(50,60)]['driver_number', 'lap_number', 'is_pit_in_lap', 'is_pit_out_lap'])
+#print(df_laps['driver_number'].value_counts())
+#print(df_laps.sort_values(by='lap_duration', ascending=True)[['driver_number', 'lap_duration']].head(5))
+#print(df_laps[(df_laps['lap_number'] != 1) & (df_laps['is_pit_out_lap'] == False)].groupby('driver_number')['lap_duration'].median())
+#print(df_laps['lap_duration'].isna().sum())
+#print(df_laps[df_laps['lap_duration'].isna()]['lap_number'])
+#df_laps['is_pit_in_lap'] = df_laps.groupby(['driver_number'])['is_pit_out_lap'].shift(-1)
+#print(df_laps[df_laps['lap_number'].between(53,60)][['driver_number', 'lap_number', 'is_pit_in_lap', 'is_pit_out_lap']])
 
+df_laps_stints = df_laps.merge(df_stints, on=['driver_number', 'meeting_key', 'session_key',])
+df_laps_stints = df_laps_stints[(df_laps_stints['lap_number'] >= df_laps_stints['lap_start']) & (df_laps_stints['lap_number'] <= df_laps_stints['lap_end'])]
+df_laps_stints['tyre_age'] = df_laps_stints['tyre_age_at_start'] + df_laps_stints['lap_number'] - df_laps_stints['lap_start']
 
+df_laps_stints['date_start'] = pd.to_datetime(df_laps_stints['date_start'], format='ISO8601')
+df_weather['date'] = pd.to_datetime(df_weather['date'], format='ISO8601')
+df_laps_stints = df_laps_stints.sort_values('date_start')
+df_weather = df_weather.sort_values('date')
+df_laps_stints = pd.merge_asof(df_laps_stints, df_weather, left_on='date_start', right_on='date')
 
+df_yellow = df_race_control[(df_race_control['category'] == 'Flag') & (df_race_control['flag'].isin(['YELLOW', 'DOUBLE YELLOW']))]
 
+laps_flag = df_yellow['lap_number'].unique()
+df_laps_stints = df_laps_stints[~df_laps_stints['lap_number'].isin(laps_flag)]
 
+df_laps_stints = df_laps_stints.sort_values(['driver_number','stint_number', 'lap_number'])
 
+df_laps_stints['rolling_median'] = (
+    df_laps_stints
+    .groupby(['driver_number', 'stint_number'])['lap_duration']
+    .transform(
+        lambda x: x.rolling(
+            window=7,
+            center=True,
+            min_periods=5
+        ).median()
+    )
+)
 
+df_laps_stints['scostamento'] = df_laps_stints['lap_duration'] - df_laps_stints['rolling_median']
+
+df_laps_stints['outlier'] = (df_laps_stints['scostamento'] > 2.5)
+
+#print(df_laps_stints[df_laps_stints['outlier'] == True][['driver_number', 'lap_number', 'lap_duration', 'is_pit_out_lap', 'stint_number', 'date_start']].sort_values(['lap_number', 'driver_number']))
+print(
+    df_laps_stints[df_laps_stints['outlier']]
+    .groupby('lap_number')
+    .agg(
+        numero_outlier=('driver_number', 'count'),
+        durata_media=('lap_duration', 'mean'),
+        durata_max=('lap_duration', 'max'),
+        durata_min=('lap_duration', 'min')
+    )
+)
 
 
