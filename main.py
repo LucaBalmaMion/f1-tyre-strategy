@@ -4,6 +4,17 @@ import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
+import numpy as np
+
+from sklearn.linear_model import LinearRegression
+from sklearn.dummy import DummyRegressor
+from sklearn.model_selection import GroupKFold, cross_val_score
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestRegressor, HistGradientBoostingRegressor
+from sklearn.inspection import permutation_importance
+
 
 
 BASE_URL = "https://api.openf1.org/v1"
@@ -12,7 +23,7 @@ SESSION_KEY, YEAR, SESSION_NAME = 9094, 2023, "Race"
 # Soglie della pulizia
 GIRO_FINE_ASCIUTTO_RIF = 49   # ultimo giro per il riferimento in asciutto (Monaco 2023)
 SOGLIA_TRANSIZIONE, SOGLIA_BAGNATO = 2, 6     # secondi sopra il tempo asciutto
-FINESTRA_MEDIANA, MIN_PERIODI, SOGLIA_OUTLIER = 7, 5, 2.5
+FINESTRA_MEDIANA, MIN_PERIODI, SOGLIA_OUTLIER = 7, 5, 2
 os.makedirs(DATA_DIR, exist_ok=True)
 
 
@@ -121,71 +132,118 @@ giri_puliti.to_csv(os.path.join(DATA_DIR, "giri_puliti.csv"), index=False)
 
 #GRAFICI
 
-out_dir = Path(__file__).resolve().parent / "figures"
-out_dir.mkdir(parents=True, exist_ok=True)
+SAVE_PLOT = False
 
-fig_hist, ax_hist = plt.subplots()
+if SAVE_PLOT:
+    out_dir = Path(__file__).resolve().parent / "figures"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig_hist, ax_hist = plt.subplots()
 
-#istogramma
-ax_hist.hist(df_laps_stints['lap_duration'], bins=80)
-ax_hist.set_xlabel('Tempo sul giro (s)')
-ax_hist.set_ylabel('Numero di giri')
-fig_hist.savefig(out_dir / "istogramma_lap_duration.png", dpi=300, bbox_inches="tight")
-
-
-#boxplot
-fig_box, ax_box = plt.subplots()
-df_laps_stints.boxplot(column='lap_duration', by='compound', ax=ax_box)
-fig_box.savefig(out_dir / "boxplot_lap_duration_compound.png", dpi=300, bbox_inches="tight")
+    #istogramma
+    ax_hist.hist(df_laps_stints['lap_duration'], bins=80)
+    ax_hist.set_xlabel('Tempo sul giro (s)')
+    ax_hist.set_ylabel('Numero di giri')
+    fig_hist.savefig(out_dir / "istogramma_lap_duration.png", dpi=300, bbox_inches="tight")
 
 
-
-#scatter
-fig_scatter, ax_scatter = plt.subplots()
-for comp, g in df_laps_stints.groupby('compound'):
-    ax_scatter.scatter(g['tyre_age'], g['lap_duration'], label=comp, s=12)
-ax_scatter.set_xlabel('Età gomma (giri)')
-ax_scatter.set_ylabel('Tempo (s)')
-ax_scatter.legend()
-fig_scatter.savefig(out_dir / "scatter_tyre_age_lap_duration.png", dpi=300, bbox_inches="tight")
+    #boxplot
+    fig_box, ax_box = plt.subplots()
+    df_laps_stints.boxplot(column='lap_duration', by='compound', ax=ax_box)
+    fig_box.savefig(out_dir / "boxplot_lap_duration_compound.png", dpi=300, bbox_inches="tight")
 
 
 
-colori_mescola = {
-    'SOFT': 'tab:red',
-    'MEDIUM': 'goldenrod',
-    'HARD': 'tab:gray',
+    #scatter
+    fig_scatter, ax_scatter = plt.subplots()
+    for comp, g in df_laps_stints.groupby('compound'):
+        ax_scatter.scatter(g['tyre_age'], g['lap_duration'], label=comp, s=12)
+    ax_scatter.set_xlabel('Età gomma (giri)')
+    ax_scatter.set_ylabel('Tempo (s)')
+    ax_scatter.legend()
+    fig_scatter.savefig(out_dir / "scatter_tyre_age_lap_duration.png", dpi=300, bbox_inches="tight")
+
+
+
+    colori_mescola = {
+        'SOFT': 'tab:red',
+        'MEDIUM': 'goldenrod',
+        'HARD': 'tab:gray',
+    }
+
+    piloti = sorted(df_laps_stints['driver_number'].unique())
+    fig1, axs = plt.subplots(4, 5, figsize=(14, 9), sharex=True, sharey=True)
+
+    for ax, d in zip(axs.flat, piloti):
+        g = df_laps_stints[df_laps_stints['driver_number'] == d].sort_values('lap_number')
+
+        for i in range(len(g) - 1):
+            x_seg = g['lap_number'].iloc[i:i + 2]
+            y_seg = g['lap_duration'].iloc[i:i + 2]
+            comp = g['compound'].iloc[i]
+            ax.plot(
+                x_seg,
+                y_seg,
+                color=colori_mescola.get(comp, 'tab:gray'),
+                linewidth=1.5,
+            )
+
+        ax.set_title(f'Pilota {d}')
+        ax.grid(True, alpha=0.25)
+    handles = [
+        plt.Line2D([0], [0], color=col, lw=2, label=comp)
+        for comp, col in colori_mescola.items()
+    ]
+    fig1.legend(handles=handles, title='Compound', loc='upper right')
+    fig1.supxlabel('Numero di giro')
+    fig1.supylabel('Tempo sul giro (s)')
+    fig1.tight_layout()
+    fig1.savefig(out_dir / "piloti_lap_duration_compound.png", dpi=300, bbox_inches="tight")
+
+    # istogramma 2
+    fig_hist2, ax_hist2 = plt.subplots()
+
+    ax_hist2.hist(df_laps_stints['scostamento'], bins=30)
+    ax_hist2.set_xlabel('Tempo sul giro (s)')
+    ax_hist2.set_ylabel('Numero di giri')
+    fig_hist2.savefig(out_dir / "istogramma_scostamento.png", dpi=300, bbox_inches="tight")
+
+'''
+##**PRIMO MODELLO**##
+#regressione lineare
+SELECTED_COMPOUND = ['HARD']
+
+dati = giri_puliti[giri_puliti['compound'].isin(SELECTED_COMPOUND)]
+X = dati[['tyre_age', 'lap_number']]
+y = dati['lap_duration']
+gruppi = dati['driver_number']
+
+modello = LinearRegression().fit(X, y)
+print(modello.coef_, modello.intercept_)
+
+cv = GroupKFold(n_splits=dati['driver_number'].nunique())
+for nome, mod in [('baseline', DummyRegressor(strategy='mean')), ('lineare', LinearRegression())]:
+    punteggi = cross_val_score(mod, X, y, groups=gruppi, cv=cv, scoring='neg_mean_absolute_error')
+    mae_medio = -punteggi.mean()
+    mae_std = punteggi.std()
+    #print(f"{nome}: {mae_medio:.3f} s (+/- {mae_std:.3f} s)")
+    '''
+
+
+## CONFRONTO TRA MODELLI ##
+dati = giri_puliti.copy()
+X = dati[['tyre_age', 'lap_number', 'compound', 'track_temperature', 'humidity', 'wind_speed']]
+y = dati['lap_duration']
+gruppi = dati['driver_number']
+
+#pipeline----
+pre = ColumnTransformer([('comp', OneHotEncoder(handle_unknown='ignore'), ['compound'])], remainder='passthrough')
+modelli = {
+    'baseline (media)': DummyRegressor(strategy='mean'),
+    'lineare': Pipeline([('pre', pre), ('m', LinearRegression())]),
+    'random forest': Pipeline([('pre', pre), ('m', RandomForestRegressor(n_estimators=200, random_state=0))]),
+    'hist gradient boosting': Pipeline([('pre', pre), ('m', HistGradientBoostingRegressor(random_state=0))]),
 }
-
-piloti = sorted(df_laps_stints['driver_number'].unique())
-fig1, axs = plt.subplots(4, 5, figsize=(14, 9), sharex=True, sharey=True)
-
-for ax, d in zip(axs.flat, piloti):
-    g = df_laps_stints[df_laps_stints['driver_number'] == d].sort_values('lap_number')
-
-    for i in range(len(g) - 1):
-        x_seg = g['lap_number'].iloc[i:i + 2]
-        y_seg = g['lap_duration'].iloc[i:i + 2]
-        comp = g['compound'].iloc[i]
-        ax.plot(
-            x_seg,
-            y_seg,
-            color=colori_mescola.get(comp, 'tab:gray'),
-            linewidth=1.5,
-        )
-
-    ax.set_title(f'Pilota {d}')
-    ax.grid(True, alpha=0.25)
-handles = [
-    plt.Line2D([0], [0], color=col, lw=2, label=comp)
-    for comp, col in colori_mescola.items()
-]
-fig1.legend(handles=handles, title='Compound', loc='upper right')
-fig1.supxlabel('Numero di giro')
-fig1.supylabel('Tempo sul giro (s)')
-fig1.tight_layout()
-fig1.savefig(out_dir / "piloti_lap_duration_compound.png", dpi=300, bbox_inches="tight")
-
-
-
-
+cv = GroupKFold(n_splits=dati['driver_number'].nunique())
+for nome, mod in modelli.items():
+    s = cross_val_score(mod, X, y, groups=gruppi, cv=cv, scoring='neg_mean_absolute_error')
+    print(f'{nome:24s} MAE medio {-s.mean():.3f} MAE std {s.std():.3f} (fold: {np.round(-s, 3)})')
