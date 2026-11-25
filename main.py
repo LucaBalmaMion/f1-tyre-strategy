@@ -3,283 +3,189 @@ import time
 import requests
 import pandas as pd
 import matplotlib.pyplot as plt
+from pathlib import Path
 
-
-# ==================================================
-# CONFIGURAZIONE
-# ==================================================
 
 BASE_URL = "https://api.openf1.org/v1"
 DATA_DIR = "data"
-
-SESSION_KEY = 9094
-YEAR = 2023
-SESSION_NAME = "Race"
-
+SESSION_KEY, YEAR, SESSION_NAME = 9094, 2023, "Race"
+# Soglie della pulizia
+GIRO_FINE_ASCIUTTO_RIF = 49   # ultimo giro per il riferimento in asciutto (Monaco 2023)
+SOGLIA_TRANSIZIONE, SOGLIA_BAGNATO = 2, 6     # secondi sopra il tempo asciutto
+FINESTRA_MEDIANA, MIN_PERIODI, SOGLIA_OUTLIER = 7, 5, 2.5
 os.makedirs(DATA_DIR, exist_ok=True)
 
 
-# ==================================================
-# DOWNLOAD E CARICAMENTO DATI
-# ==================================================
-
 def scarica(endpoint, params, nome_file):
-    """
-    Scarica i dati da OpenF1 oppure carica il CSV
-    già presente nella cartella data.
-    """
-
+    """Scarica da OpenF1 oppure legge il CSV già salvato in data/."""
     percorso = os.path.join(DATA_DIR, nome_file)
-
     if os.path.exists(percorso):
         return pd.read_csv(percorso)
-
-    url = f"{BASE_URL}/{endpoint}"
-
-    response = requests.get(url, params=params, timeout=30)
+    response = requests.get(f"{BASE_URL}/{endpoint}", params=params, timeout=30)
     response.raise_for_status()
-
-    dati = response.json()
-    df = pd.DataFrame(dati)
-
-    # Rimuove le colonne che contengono liste
-    colonne_lista = [
-        col for col in df.columns
-        if df[col].apply(lambda x: isinstance(x, list)).any()
-    ]
-
-    df = df.drop(columns=colonne_lista)
-
+    df = pd.DataFrame(response.json())
+    if df.empty:
+        print(f"Attenzione: nessun dato per {endpoint} {params}, file non salvato")
+        return df
+    df = df.drop(columns=[c for c in df.columns if df[c].apply(lambda x: isinstance(x, list)).any()])
     df.to_csv(percorso, index=False)
-
     time.sleep(1)
-
     return df
 
 
-# ==================================================
-# ACQUISIZIONE DEI DATASET
-# ==================================================
-
-df_sessions = scarica(
-    "sessions",
-    {"year": YEAR, "session_name": SESSION_NAME},
-    "sessions.csv"
-)
-
-df_laps = scarica(
-    "laps",
-    {"session_key": SESSION_KEY},
-    "laps.csv"
-)
-
-df_stints = scarica(
-    "stints",
-    {"session_key": SESSION_KEY},
-    "stints.csv"
-)
-
-df_race_control = scarica(
-    "race_control",
-    {"session_key": SESSION_KEY},
-    "race_control.csv"
-)
-
-df_weather = scarica(
-    "weather",
-    {"session_key": SESSION_KEY},
-    "weather.csv"
-)
+funnel = []
 
 
-# ==================================================
-# PREPARAZIONE DEI GIRI
-# ==================================================
+def registra(regola, tabella):
+    funnel.append((regola, len(tabella)))
 
+
+df_sessions = scarica("sessions", {"year": YEAR, "session_name": SESSION_NAME}, "sessions.csv")
+df_laps = scarica("laps", {"session_key": SESSION_KEY}, "laps.csv")
+df_stints = scarica("stints", {"session_key": SESSION_KEY}, "stints.csv")
+df_race_control = scarica("race_control", {"session_key": SESSION_KEY}, "race_control.csv")
+df_weather = scarica("weather", {"session_key": SESSION_KEY}, "weather.csv")
+
+# Giri: giro di rientro = giro prima di un'uscita (calcolato prima di togliere righe)
 df_laps = df_laps.copy()
+df_laps["date_start"] = pd.to_datetime(df_laps["date_start"], format="ISO8601", utc=True).dt.as_unit("ns")
+df_laps["is_pit_out_lap"] = df_laps["is_pit_out_lap"].eq(True)
+df_laps = df_laps.sort_values(["driver_number", "lap_number"])
+df_laps["is_pit_in_lap"] = df_laps.groupby("driver_number")["is_pit_out_lap"].shift(-1, fill_value=False)
+registra("giri scaricati", df_laps)
 
-df_laps["date_start"] = pd.to_datetime(
-    df_laps["date_start"],
-    format="ISO8601",
-    utc=True
-)
+df_laps = df_laps.dropna(subset=["lap_duration", "date_start"])
+registra("tempo e data presenti", df_laps)
 
-df_laps = df_laps.dropna(
-    subset=["lap_duration", "date_start"]
-)
+df_laps = df_laps[~df_laps["is_pit_out_lap"]]
+registra("non giro di uscita", df_laps)
 
-# Esclude i giri di uscita dai box
-df_laps = df_laps[
-    df_laps["is_pit_out_lap"] != True
-]
+df_laps = df_laps[~df_laps["is_pit_in_lap"]]
+registra("non giro di rientro", df_laps)
 
+df_laps = df_laps[df_laps["lap_number"] > 1]
+registra("non giro 1", df_laps)
 
-# ==================================================
-# ASSOCIAZIONE GIRI E STINT
-# ==================================================
+# Giri + stint: ogni giro prende lo stint che lo contiene, poi si calcola l'età della gomma
+df_laps_stints = df_laps.merge(df_stints, on=["driver_number", "meeting_key", "session_key"])
+df_laps_stints = df_laps_stints[df_laps_stints["lap_number"].between(df_laps_stints["lap_start"], df_laps_stints["lap_end"])].copy()
+registra("giri con uno stint", df_laps_stints)
 
-df_laps_stints = pd.merge(
-    df_laps,
-    df_stints,
-    on=["driver_number", "meeting_key", "session_key"],
-    how="inner"
-)
+df_laps_stints["tyre_age"] = df_laps_stints["tyre_age_at_start"] + df_laps_stints["lap_number"] - df_laps_stints["lap_start"]
 
-# Mantiene solamente i giri appartenenti allo stint
-df_laps_stints = df_laps_stints[
-    (df_laps_stints["lap_number"] >= df_laps_stints["lap_start"]) &
-    (df_laps_stints["lap_number"] <= df_laps_stints["lap_end"])
-].copy()
+# Meteo: ultima misura precedente all'inizio del giro (senza le chiavi già presenti nei giri)
+df_weather = df_weather.drop(columns=["meeting_key", "session_key"])
+df_weather["date"] = pd.to_datetime(df_weather["date"], format="ISO8601", utc=True).dt.as_unit("ns")
+df_laps_stints = pd.merge_asof(df_laps_stints.sort_values("date_start"), df_weather.sort_values("date"),
+                               left_on="date_start", right_on="date", direction="backward")
 
-# Calcola l'età della gomma
-df_laps_stints["tyre_age"] = (
-    df_laps_stints["tyre_age_at_start"] +
-    df_laps_stints["lap_number"] -
-    df_laps_stints["lap_start"]
-)
+# Bandiere gialle: scarta i giri interessati, per tutti i piloti
+gialle = df_race_control[(df_race_control["category"] == "Flag") & df_race_control["flag"].isin(["YELLOW", "DOUBLE YELLOW"])]
+df_laps_stints = df_laps_stints[~df_laps_stints["lap_number"].isin(gialle["lap_number"].dropna().unique())].copy()
+registra("senza bandiere gialle", df_laps_stints)
 
-
-# ==================================================
-# ASSOCIAZIONE DATI METEO
-# ==================================================
-
-df_weather = df_weather.copy()
-
-df_weather["date"] = pd.to_datetime(
-    df_weather["date"],
-    format="ISO8601",
-    utc=True
-)
-
-df_laps_stints = df_laps_stints.sort_values("date_start")
-df_weather = df_weather.sort_values("date")
-
-df_laps_stints = pd.merge_asof(
-    df_laps_stints,
-    df_weather,
-    left_on="date_start",
-    right_on="date",
-    direction="backward"
-)
+# Fase meteo di ogni giro (asciutto / transizione / bagnato) e sua numerazione
+riepilogo_giri = df_laps_stints.groupby("lap_number").agg(tempo_mediano=("lap_duration", "median"), quota_pioggia=("rainfall", "mean")).reset_index()
+asciutti = riepilogo_giri[(riepilogo_giri["lap_number"] <= GIRO_FINE_ASCIUTTO_RIF) & (riepilogo_giri["quota_pioggia"] == 0)]
+tempo_asciutto = asciutti["tempo_mediano"].median()
 
 
-# ==================================================
-# ESCLUSIONE GIRI CON BANDIERE GIALLE
-# ==================================================
-
-bandiere_gialle = df_race_control[
-    (df_race_control["category"] == "Flag") &
-    (df_race_control["flag"].isin(["YELLOW", "DOUBLE YELLOW"]))
-]
-
-giri_da_escludere = bandiere_gialle["lap_number"].dropna().unique()
-
-df_laps_stints = df_laps_stints[
-    ~df_laps_stints["lap_number"].isin(giri_da_escludere)
-].copy()
-
-# ==================================================
-# CLASSIFICAZIONE DELLE CONDIZIONI METEO
-# ==================================================
-
-# Riepilogo delle condizioni per ogni giro
-riepilogo_giri = (
-    df_laps_stints
-    .groupby("lap_number")
-    .agg(
-        tempo_mediano=("lap_duration", "median"),
-        quota_pioggia=("rainfall", "mean")
-    )
-    .reset_index()
-)
-
-# Riferimento dei tempi in condizioni asciutte
-giri_asciutti = riepilogo_giri[
-    (riepilogo_giri["lap_number"] <= 49) &
-    (riepilogo_giri["quota_pioggia"] == 0)
-]
-
-tempo_asciutto = giri_asciutti["tempo_mediano"].median()
-
-
-# Classifica le condizioni della pista
 def classifica_fase(riga):
-
-    if riga["tempo_mediano"] >= tempo_asciutto + 6:
+    if riga["tempo_mediano"] >= tempo_asciutto + SOGLIA_BAGNATO:
         return "bagnato"
-
-    elif (
-        riga["quota_pioggia"] > 0 or
-        riga["tempo_mediano"] >= tempo_asciutto + 2
-    ):
+    if riga["quota_pioggia"] > 0 or riga["tempo_mediano"] >= tempo_asciutto + SOGLIA_TRANSIZIONE:
         return "transizione"
-
-    else:
-        return "asciutto"
+    return "asciutto"
 
 
-riepilogo_giri["fase_meteo"] = riepilogo_giri.apply(
-    classifica_fase,
-    axis=1
-)
-
-# Identifica i cambiamenti di fase
-riepilogo_giri = riepilogo_giri.sort_values("lap_number")
-
-riepilogo_giri["fase_id"] = (
-    riepilogo_giri["fase_meteo"]
-    .ne(riepilogo_giri["fase_meteo"].shift())
-    .cumsum()
-)
-
-# Riporta la fase meteo su ogni giro di ogni pilota
-df_laps_stints = df_laps_stints.merge(
-    riepilogo_giri[["lap_number", "fase_meteo", "fase_id"]],
-    on="lap_number",
-    how="left"
-)
+riepilogo_giri["fase_meteo"] = riepilogo_giri.apply(classifica_fase, axis=1)
+riepilogo_giri["fase_id"] = riepilogo_giri["fase_meteo"].ne(riepilogo_giri["fase_meteo"].shift()).cumsum()
+df_laps_stints = df_laps_stints.merge(riepilogo_giri[["lap_number", "fase_meteo", "fase_id"]], on="lap_number", how="left")
+df_laps_stints = df_laps_stints[df_laps_stints["fase_meteo"] == "asciutto"].copy()
+registra("solo fase asciutta", df_laps_stints)
 
 
-# ==================================================
-# IDENTIFICAZIONE OUTLIER
-# ==================================================
-
-df_laps_stints = df_laps_stints.sort_values(
-    ["driver_number", "stint_number", "lap_number"]
-)
-
-# Mediana mobile separata per pilota, stint e fase meteo
-df_laps_stints["rolling_median"] = (
-    df_laps_stints
-    .groupby(
-        ["driver_number", "stint_number", "fase_id"]
-    )["lap_duration"]
-    .transform(
-        lambda serie: serie.rolling(
-            window=7,
-            center=True,
-            min_periods=5
-        ).median()
-    )
-)
-
-# Scostamento rispetto alla mediana mobile
-df_laps_stints["scostamento"] = (
-    df_laps_stints["lap_duration"] -
-    df_laps_stints["rolling_median"]
-)
-
-# Identifica i giri anormalmente lenti
-df_laps_stints["outlier"] = (
-    df_laps_stints["scostamento"] > 2.5
-)
+# Outlier: giri più lenti di SOGLIA_OUTLIER secondi rispetto alla mediana mobile di pilota, stint e fase.
+# Dove la mediana non è calcolabile (primo/ultimo giro del gruppo) lo scostamento è NaN: il giro non viene segnalato.
+def mediana_mobile(serie):
+    return serie.rolling(FINESTRA_MEDIANA, center=True, min_periods=MIN_PERIODI).median()
 
 
-# ==================================================
-# RISULTATI
-# ==================================================
+df_laps_stints = df_laps_stints.sort_values(["driver_number", "stint_number", "lap_number"])
+df_laps_stints["rolling_median"] = df_laps_stints.groupby(["driver_number", "stint_number", "fase_id"])["lap_duration"].transform(mediana_mobile)
+df_laps_stints["scostamento"] = df_laps_stints["lap_duration"] - df_laps_stints["rolling_median"]
+df_laps_stints["outlier"] = df_laps_stints["scostamento"] > SOGLIA_OUTLIER
+giri_puliti = df_laps_stints[~df_laps_stints["outlier"]].copy()
+registra("non outlier", giri_puliti)
+giri_puliti.to_csv(os.path.join(DATA_DIR, "giri_puliti.csv"), index=False)
 
-outliers = df_laps_stints[
-    df_laps_stints["outlier"]
-].copy()
-print(outliers)
+#GRAFICI
+
+out_dir = Path(__file__).resolve().parent / "figures"
+out_dir.mkdir(parents=True, exist_ok=True)
+
+fig_hist, ax_hist = plt.subplots()
+
+#istogramma
+ax_hist.hist(df_laps_stints['lap_duration'], bins=80)
+ax_hist.set_xlabel('Tempo sul giro (s)')
+ax_hist.set_ylabel('Numero di giri')
+fig_hist.savefig(out_dir / "istogramma_lap_duration.png", dpi=300, bbox_inches="tight")
+
+
+#boxplot
+fig_box, ax_box = plt.subplots()
+df_laps_stints.boxplot(column='lap_duration', by='compound', ax=ax_box)
+fig_box.savefig(out_dir / "boxplot_lap_duration_compound.png", dpi=300, bbox_inches="tight")
+
+
+
+#scatter
+fig_scatter, ax_scatter = plt.subplots()
+for comp, g in df_laps_stints.groupby('compound'):
+    ax_scatter.scatter(g['tyre_age'], g['lap_duration'], label=comp, s=12)
+ax_scatter.set_xlabel('Età gomma (giri)')
+ax_scatter.set_ylabel('Tempo (s)')
+ax_scatter.legend()
+fig_scatter.savefig(out_dir / "scatter_tyre_age_lap_duration.png", dpi=300, bbox_inches="tight")
+
+
+
+colori_mescola = {
+    'SOFT': 'tab:red',
+    'MEDIUM': 'goldenrod',
+    'HARD': 'tab:gray',
+}
+
+piloti = sorted(df_laps_stints['driver_number'].unique())
+fig1, axs = plt.subplots(4, 5, figsize=(14, 9), sharex=True, sharey=True)
+
+for ax, d in zip(axs.flat, piloti):
+    g = df_laps_stints[df_laps_stints['driver_number'] == d].sort_values('lap_number')
+
+    for i in range(len(g) - 1):
+        x_seg = g['lap_number'].iloc[i:i + 2]
+        y_seg = g['lap_duration'].iloc[i:i + 2]
+        comp = g['compound'].iloc[i]
+        ax.plot(
+            x_seg,
+            y_seg,
+            color=colori_mescola.get(comp, 'tab:gray'),
+            linewidth=1.5,
+        )
+
+    ax.set_title(f'Pilota {d}')
+    ax.grid(True, alpha=0.25)
+handles = [
+    plt.Line2D([0], [0], color=col, lw=2, label=comp)
+    for comp, col in colori_mescola.items()
+]
+fig1.legend(handles=handles, title='Compound', loc='upper right')
+fig1.supxlabel('Numero di giro')
+fig1.supylabel('Tempo sul giro (s)')
+fig1.tight_layout()
+fig1.savefig(out_dir / "piloti_lap_duration_compound.png", dpi=300, bbox_inches="tight")
+
+
+
+
