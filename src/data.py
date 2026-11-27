@@ -1,4 +1,3 @@
-"""Download dei dati da OpenF1 con cache su file in data/."""
 import time
 from pathlib import Path
 

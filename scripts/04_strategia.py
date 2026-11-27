@@ -1,4 +1,3 @@
-"""Passo 4: perdita per sosta, strategia ottima, controlli di buon senso e back-testing per ogni gara."""
 import sys
 from pathlib import Path
 

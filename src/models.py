@@ -1,4 +1,3 @@
-"""Modello del degrado, validazione "una gara fuori" e confronto con la baseline (sezioni 8-9 e 11)."""
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd

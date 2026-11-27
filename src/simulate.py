@@ -1,4 +1,3 @@
-"""Simulatore della strategia: perdita per sosta, ricerca dell'ottimo, controlli e back-testing (sezione 12)."""
 import itertools
 
 import numpy as np

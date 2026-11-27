@@ -1,4 +1,3 @@
-"""Passo 1: scarica da OpenF1 le tabelle delle gare candidate in data/ (i file già presenti non vengono riscaricati)."""
 import sys
 from pathlib import Path
 

@@ -1,4 +1,3 @@
-"""Pulizia dei giri: regole, età della gomma, meteo e tabella degli scarti (sezioni 5 e 11)."""
 import pandas as pd
 
 # Soglie della pulizia

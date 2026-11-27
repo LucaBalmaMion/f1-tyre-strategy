@@ -1,4 +1,3 @@
-"""Passo 2: pulisce i giri di ogni gara e salva in data/ i giri puliti e la tabella degli scarti."""
 import sys
 from pathlib import Path
 

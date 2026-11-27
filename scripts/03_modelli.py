@@ -1,4 +1,3 @@
-"""Passo 3: modello del degrado per gara, grafico, e validazione "una gara fuori" contro la baseline."""
 import sys
 from pathlib import Path
 
