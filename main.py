@@ -14,6 +14,7 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestRegressor, HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
+from sklearn.model_selection import cross_val_predict
 
 
 
@@ -133,9 +134,9 @@ giri_puliti.to_csv(os.path.join(DATA_DIR, "giri_puliti.csv"), index=False)
 #GRAFICI
 
 SAVE_PLOT = False
-
+out_dir = Path(__file__).resolve().parent / "figures"
 if SAVE_PLOT:
-    out_dir = Path(__file__).resolve().parent / "figures"
+
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_hist, ax_hist = plt.subplots()
 
@@ -231,19 +232,61 @@ for nome, mod in [('baseline', DummyRegressor(strategy='mean')), ('lineare', Lin
 
 ## CONFRONTO TRA MODELLI ##
 dati = giri_puliti.copy()
+
+
+gruppi = dati['driver_number']
+piloti_train = gruppi.unique()[:-5]
+tr = gruppi.isin(piloti_train)
 X = dati[['tyre_age', 'lap_number', 'compound', 'track_temperature', 'humidity', 'wind_speed']]
 y = dati['lap_duration']
-gruppi = dati['driver_number']
 
+
+
+'''
 #pipeline----
 pre = ColumnTransformer([('comp', OneHotEncoder(handle_unknown='ignore'), ['compound'])], remainder='passthrough')
 modelli = {
     'baseline (media)': DummyRegressor(strategy='mean'),
     'lineare': Pipeline([('pre', pre), ('m', LinearRegression())]),
-    'random forest': Pipeline([('pre', pre), ('m', RandomForestRegressor(n_estimators=200, random_state=0))]),
-    'hist gradient boosting': Pipeline([('pre', pre), ('m', HistGradientBoostingRegressor(random_state=0))]),
+    'random forest 5': Pipeline([('pre', pre), ('m', RandomForestRegressor(n_estimators=200, random_state=0, min_samples_leaf=5))]),
+    'hist gradient boosting d6': Pipeline([('pre', pre), ('m', HistGradientBoostingRegressor(random_state=0, max_depth=6, min_samples_leaf=5))]),
 }
 cv = GroupKFold(n_splits=dati['driver_number'].nunique())
+#righe = []
 for nome, mod in modelli.items():
     s = cross_val_score(mod, X, y, groups=gruppi, cv=cv, scoring='neg_mean_absolute_error')
-    print(f'{nome:24s} MAE medio {-s.mean():.3f} MAE std {s.std():.3f} (fold: {np.round(-s, 3)})')
+    #righe.append({'nome' : nome, 'media' : -s.mean(), 'deviazione' : s.std()})
+    #print(f'{nome:24s} MAE medio {-s.mean():.3f} MAE std {s.std():.3f} (fold: {np.round(-s, 3)})')
+
+pi = permutation_importance(modelli['hist gradient boosting d6'], X, y, n_repeats=5, random_state=0)
+for col, val in zip(X.columns, np.round(pi.importances_mean, 3)):
+    print(f'{col:20s} {val:+.3f}')
+'''
+'''
+#SEZIONE 10
+pre = ColumnTransformer([('comp', OneHotEncoder(handle_unknown='ignore'), ['compound'])], remainder='passthrough')
+mod_pi = Pipeline([('pre', pre), ('m', HistGradientBoostingRegressor(random_state=0, max_depth=6, min_samples_leaf=5))])
+mod_pi.fit(X[tr], y[tr])
+
+pi = permutation_importance(mod_pi, X[~tr], y[~tr], n_repeats=5, random_state=0, scoring='neg_mean_absolute_error')
+for col, m, s in zip(X.columns, pi.importances_mean, pi.importances_std):
+    print(f"{col:20s} {m:+.3f} ± {s:.3f}")
+'''
+
+
+SAVE_PLOT = False
+if SAVE_PLOT:
+    pre = ColumnTransformer([('comp', OneHotEncoder(handle_unknown='ignore'), ['compound'])], remainder='passthrough')
+    mod = Pipeline([('pre', pre), ('m', HistGradientBoostingRegressor(random_state=0, max_depth=6, min_samples_leaf=5))])
+    cv = GroupKFold(n_splits=dati['driver_number'].nunique())
+    y_pred = cross_val_predict(mod, X, y, cv=cv, groups=gruppi)
+    scarto = y - y_pred
+    fig_scatter2, ax_scatter2 = plt.subplots()
+    for comp, g in dati.groupby('compound'):
+        ax_scatter2.scatter(g['tyre_age'],scarto.loc[g.index], label=comp, s=12)
+    ax_scatter2.set_xlabel('Età gomma (giri)')
+    ax_scatter2.set_ylabel('Residuo (s)')
+    ax_scatter2.legend()
+    fig_scatter2.savefig(out_dir / "scatter_tyre_age_residuo.png", dpi=300, bbox_inches="tight")
+
+print(dati[dati['lap_number'] == 16][['driver_number', 'outlier', 'lap_duration']].sort_values(by='lap_duration', ascending=False))
