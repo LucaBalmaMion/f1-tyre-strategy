@@ -1,3 +1,5 @@
+"""Esplorazione iniziale su una sola gara (Monte Carlo 2023): pulizia, primi grafici e primi modelli.
+Versione storica, sostituita da src/ e scripts/. Lancio: python notebooks/journey.py"""
 import os
 import time
 import requests
@@ -19,7 +21,7 @@ from sklearn.model_selection import cross_val_predict
 
 
 BASE_URL = "https://api.openf1.org/v1"
-DATA_DIR = "data"
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"   # cartella data/ del progetto
 SESSION_KEY, YEAR, SESSION_NAME = 9094, 2023, "Race"
 # Soglie della pulizia
 GIRO_FINE_ASCIUTTO_RIF = 49   # ultimo giro per il riferimento in asciutto (Monaco 2023)
@@ -135,7 +137,7 @@ giri_puliti.to_csv(os.path.join(DATA_DIR, "giri_puliti.csv"), index=False)
 #GRAFICI
 
 SAVE_PLOT = False
-out_dir = Path(__file__).resolve().parent / "figures"
+out_dir = Path(__file__).resolve().parents[1] / "figures"
 if SAVE_PLOT:
 
     out_dir.mkdir(parents=True, exist_ok=True)
